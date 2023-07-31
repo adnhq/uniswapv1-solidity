@@ -7,7 +7,7 @@ interface IExchange {
     // =============================================================
     
     error ZeroAddress();
-    error DeadlineExceeded();
+    error DeadlineExpired();
     error InsufficientEthProvided();
     error InsufficientEthReceived();
     error InsufficientTokensProvided();
