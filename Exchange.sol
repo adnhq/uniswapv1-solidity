@@ -8,8 +8,10 @@ import {IFactory} from "./interfaces/IFactory.sol";
 import {IExchange} from "./interfaces/IExchange.sol";
 
 /**
- * @author adnhq
+ * @author 0xHawkyne
  * @notice Streamlined UniswapV1 implementation in solidity
+ * Documentation for original contract at: https://github.com/Uniswap/v1-contracts/blob/master/contracts/uniswap_exchange.vy
+ * This contract only performs unidirectional trades, ie. get optimal output amount for a specified input amount
  */
 contract Exchange is IExchange, ERC20 {
     using SafeERC20 for IERC20;
@@ -17,12 +19,10 @@ contract Exchange is IExchange, ERC20 {
     address public immutable factory;
     address public immutable token;
     
-    modifier validDeadline(uint256 deadline) {
-        _validateDeadline(deadline);
+    modifier ensure(uint256 deadline) {
+        if(block.timestamp > deadline) revert DeadlineExpired();
         _;
     }
-
-    function _validateDeadline(uint256 deadline) private view { if(block.timestamp > deadline) revert DeadlineExceeded(); }
 
     constructor(address _token) ERC20("Liquidity Token", "LT", 18) {
         if(_token == address(0)) revert ZeroAddress();
@@ -34,23 +34,25 @@ contract Exchange is IExchange, ERC20 {
     //                         LIQUIDITY
     // =============================================================
 
-    function addLiquidity(uint256 minLiquidity, uint256 maxTokens, uint256 deadline) public payable validDeadline(deadline) returns (uint256) {
+    function addLiquidity(uint256 minLiquidity, uint256 maxTokens, uint256 deadline) public payable ensure(deadline) returns (uint256) {
         if(msg.value == 0 || maxTokens == 0) revert InsufficientLiquidityProvided();
 
-        uint256 tokenReserve = getReserve();
         uint256 optimalTokenAmount; 
         uint256 liquidity;
 
-        if(tokenReserve > 0) {
-            optimalTokenAmount = tokenReserve * msg.value / address(this).balance;
-            if(maxTokens < optimalTokenAmount) revert InsufficientTokensProvided();
+        if(getReserve() > 0) {
+            optimalTokenAmount = getReserve() * msg.value / address(this).balance;
+            if(maxTokens < optimalTokenAmount) {
+                revert InsufficientTokensProvided();
+            }
 
             liquidity = totalSupply * msg.value / address(this).balance; 
-
-            if(liquidity < minLiquidity) revert InsufficientLiquidityMinted();
+            if(liquidity < minLiquidity) { 
+                revert InsufficientLiquidityMinted();
+            }
         } else {
             if(msg.value < 1 gwei) revert InsufficientEthProvided();
-            
+ 
             optimalTokenAmount = maxTokens;
             liquidity = address(this).balance;
         }
@@ -64,7 +66,7 @@ contract Exchange is IExchange, ERC20 {
         return liquidity;
     }
 
-    function removeLiquidity(uint256 amount, uint256 minEth, uint256 minTokens, uint256 deadline) public validDeadline(deadline) returns (uint256, uint256) {
+    function removeLiquidity(uint256 amount, uint256 minEth, uint256 minTokens, uint256 deadline) public ensure(deadline) returns (uint256, uint256) {
         uint256 ethAmount = address(this).balance * amount / totalSupply;
         uint256 tokenAmount = getReserve() * amount / totalSupply;
         
@@ -86,20 +88,20 @@ contract Exchange is IExchange, ERC20 {
     //                           SWAP
     // =============================================================
 
-    function ethToTokenSwap(uint minTokens, uint256 deadline) public payable validDeadline(deadline) {
+    function ethToTokenSwap(uint256 minTokens, uint256 deadline) public payable ensure(deadline) {
         _ethToToken(minTokens, msg.sender);
     }
 
-    function ethToTokenTransfer(uint minTokens, uint256 deadline, address recipient) public payable validDeadline(deadline) {
+    function ethToTokenTransfer(uint256 minTokens, uint256 deadline, address recipient) public payable ensure(deadline) {
         if(recipient == address(this) || recipient == address(0)) revert InvalidRecipient();
         _ethToToken(minTokens, recipient);
     }
 
-    function tokenToEthSwap(uint256 tokenAmount, uint256 minEth, uint256 deadline) public validDeadline(deadline) {
+    function tokenToEthSwap(uint256 tokenAmount, uint256 minEth, uint256 deadline) public ensure(deadline) {
         _tokenToEth(tokenAmount, minEth, msg.sender);
     }
 
-    function tokenToEthTransfer(uint tokenAmount, uint256 minEth, uint256 deadline, address recipient) public validDeadline(deadline) {
+    function tokenToEthTransfer(uint256 tokenAmount, uint256 minEth, uint256 deadline, address recipient) public ensure(deadline) {
         if(recipient == address(this) || recipient == address(0)) revert InvalidRecipient();
         _tokenToEth(tokenAmount, minEth, recipient);
     }
@@ -150,7 +152,7 @@ contract Exchange is IExchange, ERC20 {
         _tokenToToken(inputTokenAmount, minOutputTokenAmount, minEth, deadline, recipient, exchange);
     }
 
-    function _ethToToken(uint minTokens, address recipient) private {
+    function _ethToToken(uint256 minTokens, address recipient) private {
         uint256 tokenAmount = _getPrice(msg.value, address(this).balance - msg.value, getReserve()); 
         // Subtracting msg.value for output calculation using existing reserves, that is, Eth reserve before this tx, 
         // Since Eth reserves of the contract already increased by msg.value with the function call
@@ -161,7 +163,7 @@ contract Exchange is IExchange, ERC20 {
         emit TokenPurchase(recipient, msg.value, tokenAmount);
     }
     
-    function _tokenToEth(uint tokenAmount, uint256 minEth, address recipient) private {
+    function _tokenToEth(uint256 tokenAmount, uint256 minEth, address recipient) private {
         uint256 ethAmount = getTokenToEthPrice(tokenAmount);
         if(ethAmount < minEth) revert InsufficientTokensProvided();
 
@@ -185,7 +187,7 @@ contract Exchange is IExchange, ERC20 {
         // swap input token to eth
         uint256 ethAmount = getTokenToEthPrice(inputTokenAmount);
         if(ethAmount < minEth) revert InsufficientEthReceived();
-        uint tokenAmountOut = IExchange(exchange).getEthToTokenPrice(ethAmount);
+        uint256 tokenAmountOut = IExchange(exchange).getEthToTokenPrice(ethAmount);
         if(tokenAmountOut < minOutputTokenAmount) revert InsufficientOutputTokens();
 
         // swap received eth to output token and transfer to recipient
